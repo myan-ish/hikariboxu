@@ -60,7 +60,10 @@ func ImageToByte(filename string) ([]byte, error) {
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			grey, _, _, _ := img.At(x, y).RGBA()
-			data = append(data, byte(grey>>8))
+			snippet := byte(grey >> 8)
+			if snippet != 0 {
+				data = append(data, snippet)
+			}
 		}
 	}
 	return data, nil
@@ -72,8 +75,6 @@ func encodeFileToImage(filename, output_image string, width, height int) {
 	if err != nil {
 		log.Fatalf("Failed to read file: %v", err)
 	}
-
-	fmt.Println(data)
 
 	img := BinaryToImage(data, width, height)
 
@@ -124,7 +125,7 @@ func decodeImageToFile(input_image, output_file string) {
 }
 
 func main() {
-	encodeFileToImage(".gitignore", "output.png", 1080, 720)
+	encodeFileToImage(".gitignore", "output.png", 500, 500)
 
 	decodeImageToFile("output.png", "decoded")
 
