@@ -6,6 +6,8 @@ GO project which will encode and decode your data to and from video format.
 
 Infinite storage glitch if you save it in free streaming services (Incoming).
 
+This has dependencies with ffmpeg https://ffmpeg.org/
+
 ## Installation
 
 
