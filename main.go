@@ -170,29 +170,29 @@ func getFilePaths(dirPath string) ([]string, error) {
 	return filePaths, nil
 }
 
-func toFileWorker(id int, chunks <-chan int, wg *sync.WaitGroup, file_paths []string) {
-	defer wg.Done()
+// func toFileWorker(id int, chunks <-chan int, wg *sync.WaitGroup, file_paths []string) {
+// 	defer wg.Done()
 
-	outfile_path := "decoded"
-	output, err := os.OpenFile(outfile_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer output.Close()
+// 	outfile_path := "decoded"
+// 	output, err := os.OpenFile(outfile_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
+// 	defer output.Close()
 
-	for _, file := range file_paths {
-		data, err := ImageToByte(file)
-		if err != nil {
-			log.Printf("Error decoding image %s: %v", file, err)
-			continue
-		}
+// 	for _, file := range file_paths {
+// 		data, err := ImageToByte(file)
+// 		if err != nil {
+// 			log.Printf("Error decoding image %s: %v", file, err)
+// 			continue
+// 		}
 
-		// Assuming `ImageToByte` handles determining the actual data length
-		if _, err := output.Write(data); err != nil {
-			log.Fatal(err)
-		}
-	}
-}
+// 		// Assuming `ImageToByte` handles determining the actual data length
+// 		if _, err := output.Write(data); err != nil {
+// 			log.Fatal(err)
+// 		}
+// 	}
+// }
 
 func WriteBinaryFile(filename string, chunk []byte) (string, error) {
 	err := os.WriteFile(filename, chunk, 0644)
@@ -238,9 +238,10 @@ func ImageToByte(filename string) ([]byte, error) {
 		for x := 0; x < width; x++ {
 			grey, _, _, _ := img.At(x, y).RGBA()
 			snippet := byte(grey >> 8)
-			if snippet != 0 {
-				data = append(data, snippet)
-			}
+			// if snippet != 0 {
+			// 	data = append(data, snippet)
+			// }
+			data = append(data, snippet)
 		}
 	}
 	return data, nil
@@ -305,9 +306,47 @@ func decodeImageToFile(input_image, output_file string) {
 	}
 }
 
-func decodeVideoToBinaryFile(video, output_folder string, workers int) {
-	cmd := exec.Command("ffmpeg", "-i", video, "-vf", "fps=30", "outp/frame%d.png")
+// func decodeVideoToBinaryFile(video, output_folder string, workers int) {
+// 	cmd := exec.Command("ffmpeg", "-i", video, "-vf", "fps=30", "outp/frame%d.png")
 
+// 	var out bytes.Buffer
+// 	var stderr bytes.Buffer
+// 	cmd.Stdout = &out
+// 	cmd.Stderr = &stderr
+
+// 	err := cmd.Run()
+// 	if err != nil {
+// 		log.Printf("cmd.Run() failed with %s\n", err)
+// 		log.Printf("stderr: %v\n", stderr.String())
+// 	}
+// 	log.Printf("Output: %v\n", out.String())
+
+// 	file_paths, _ := getFilePaths("temp")
+
+// 	chunks := len(file_paths) / workers
+
+// 	if int(len(file_paths))%workers != 0 {
+// 		chunks++
+// 	}
+
+// 	var wg sync.WaitGroup
+// 	chunkChannel := make(chan int, chunks)
+
+// 	for w := 1; w <= workers; w++ {
+// 		wg.Add(1)
+// 		go toFileWorker(w, chunkChannel, &wg, file_paths)
+// 	}
+
+// 	for i := 1; i <= chunks; i++ {
+// 		chunkChannel <- i
+// 	}
+// 	close(chunkChannel)
+
+// 	wg.Wait()
+// }
+
+func decodeVideoToBinaryFile(video, output_folder string, workers int) {
+	cmd := exec.Command("ffmpeg", "-i", video, "-vf", "fps=30", output_folder+"/frame%d.png")
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
@@ -317,38 +356,85 @@ func decodeVideoToBinaryFile(video, output_folder string, workers int) {
 	if err != nil {
 		log.Printf("cmd.Run() failed with %s\n", err)
 		log.Printf("stderr: %v\n", stderr.String())
+		return
 	}
 	log.Printf("Output: %v\n", out.String())
 
-	file_paths, _ := getFilePaths("temp")
+	file_paths, _ := getFilePaths(output_folder)
 
 	chunks := len(file_paths) / workers
-
-	if int(len(file_paths))%workers != 0 {
+	if len(file_paths)%workers != 0 {
 		chunks++
 	}
 
 	var wg sync.WaitGroup
-	chunkChannel := make(chan int, chunks)
 
-	for w := 1; w <= workers; w++ {
+	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go toFileWorker(w, chunkChannel, &wg, file_paths)
+		start := w * chunks
+		end := start + chunks
+		if end > len(file_paths) {
+			end = len(file_paths)
+		}
+		go toFileWorker(w+1, file_paths[start:end], &wg, output_folder)
 	}
-
-	for i := 1; i <= chunks; i++ {
-		chunkChannel <- i
-	}
-	close(chunkChannel)
 
 	wg.Wait()
 
+	// Combine the chunks
+	combineChunks(workers, output_folder)
+}
+
+func toFileWorker(id int, file_paths []string, wg *sync.WaitGroup, output_folder string) {
+	defer wg.Done()
+
+	outfile_path := output_folder + "/output_chunk" + strconv.Itoa(id)
+	output, err := os.OpenFile(outfile_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer output.Close()
+
+	for _, file := range file_paths {
+		data, err := ImageToByte(file)
+		if err != nil {
+			log.Printf("Error decoding image %s: %v", file, err)
+			continue
+		}
+		if _, err := output.Write(data); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
+func combineChunks(workers int, output_folder string) {
+	finalOutputPath := "decoded"
+	finalOutput, err := os.OpenFile(finalOutputPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer finalOutput.Close()
+
+	for i := 1; i <= workers; i++ {
+		fmt.Print(i)
+		chunkPath := output_folder + "/output_chunk" + strconv.Itoa(i)
+		chunkData, err := os.ReadFile(chunkPath)
+		if err != nil {
+			log.Printf("Error reading chunk %s: %v", chunkPath, err)
+			continue
+		}
+		if _, err := finalOutput.Write(chunkData); err != nil {
+			log.Fatal(err)
+		}
+		// Optionally, delete the chunk file after successful writing
+		// os.Remove(chunkPath)
+	}
 }
 
 func main() {
 	os.Mkdir("temp", 0755)
 	os.Mkdir("outp", 0755)
-	readFileAsChunkBinaryChannel("test", 500, 500, 250000, 5)
+	readFileAsChunkBinaryChannel("test.mp4", 500, 500, 250000, 5)
 	createVideoFromImagesFFMPEG("temp")
 	decodeVideoToBinaryFile("output.mkv", "outp", 5)
 }
