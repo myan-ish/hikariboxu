@@ -118,19 +118,25 @@ func readFileAsChunkBinaryChannel(filename string, width, height, bufferSize, wo
 func toImageWorker(id int, chunks <-chan int, wg *sync.WaitGroup, filename string, width, height, bufferSize int) {
 	defer wg.Done()
 
-	file, err := os.Open(filename)
-	if err != nil {
-		fmt.Printf("Worker %d: Error opening file: %v\n", id, err)
-		return
-	}
-	defer file.Close()
-
 	for chunkIndex := range chunks {
+		file, err := os.Open(filename)
+		if err != nil {
+			fmt.Printf("Worker %d: Error opening file: %v\n", id, err)
+			continue // Skip this chunk if the file cannot be opened
+		}
+
 		offset := int64((chunkIndex - 1) * bufferSize)
 		buffer := make([]byte, bufferSize)
 
-		file.Seek(offset, 0)
+		_, err = file.Seek(offset, 0)
+		if err != nil {
+			fmt.Printf("Worker %d: Error seeking in file: %v\n", id, err)
+			file.Close() // Ensure file is closed even if seek fails
+			continue
+		}
+
 		bytesRead, err := file.Read(buffer)
+		file.Close() // Close the file after reading the necessary chunk
 		if err != nil {
 			fmt.Printf("Worker %d: Error reading chunk: %v\n", id, err)
 			continue
@@ -162,37 +168,18 @@ func getFilePaths(dirPath string) ([]string, error) {
 	}
 
 	sort.Slice(filePaths, func(i, j int) bool {
-		numI, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(filePaths[i]), ""), ".png"))
-		numJ, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(filePaths[j]), ""), ".png"))
+		// Extracting number from filename assuming format "frame<number>.png"
+		numI, errI := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(filePaths[i]), "frame"), ".png"))
+		numJ, errJ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(filePaths[j]), "frame"), ".png"))
+		// If error occurs in Atoi, handle it or log it, for now just return false
+		if errI != nil || errJ != nil {
+			fmt.Printf("Error parsing filenames: %v, %v\n", errI, errJ)
+			return false // Consider how to handle this case in your context
+		}
 		return numI < numJ
 	})
-
 	return filePaths, nil
 }
-
-// func toFileWorker(id int, chunks <-chan int, wg *sync.WaitGroup, file_paths []string) {
-// 	defer wg.Done()
-
-// 	outfile_path := "decoded"
-// 	output, err := os.OpenFile(outfile_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
-// 	defer output.Close()
-
-// 	for _, file := range file_paths {
-// 		data, err := ImageToByte(file)
-// 		if err != nil {
-// 			log.Printf("Error decoding image %s: %v", file, err)
-// 			continue
-// 		}
-
-// 		// Assuming `ImageToByte` handles determining the actual data length
-// 		if _, err := output.Write(data); err != nil {
-// 			log.Fatal(err)
-// 		}
-// 	}
-// }
 
 func WriteBinaryFile(filename string, chunk []byte) (string, error) {
 	err := os.WriteFile(filename, chunk, 0644)
@@ -267,8 +254,8 @@ func encodeFileToImage(filename, output_image string, width, height int) {
 
 }
 
-func createVideoFromImagesFFMPEG(folder string) {
-	cmd := exec.Command("ffmpeg", "-framerate", "30", "-i", "temp/%d.png", "-c:v", "ffv1", "-level", "3", "output.mkv")
+func createVideoFromImagesFFMPEG(folder, encoded_video string) {
+	cmd := exec.Command("ffmpeg", "-framerate", "30", "-i", "temp/%d.png", "-c:v", "ffv1", "-level", "3", encoded_video)
 
 	var out bytes.Buffer
 	var stderr bytes.Buffer
@@ -306,45 +293,6 @@ func decodeImageToFile(input_image, output_file string) {
 	}
 }
 
-// func decodeVideoToBinaryFile(video, output_folder string, workers int) {
-// 	cmd := exec.Command("ffmpeg", "-i", video, "-vf", "fps=30", "outp/frame%d.png")
-
-// 	var out bytes.Buffer
-// 	var stderr bytes.Buffer
-// 	cmd.Stdout = &out
-// 	cmd.Stderr = &stderr
-
-// 	err := cmd.Run()
-// 	if err != nil {
-// 		log.Printf("cmd.Run() failed with %s\n", err)
-// 		log.Printf("stderr: %v\n", stderr.String())
-// 	}
-// 	log.Printf("Output: %v\n", out.String())
-
-// 	file_paths, _ := getFilePaths("temp")
-
-// 	chunks := len(file_paths) / workers
-
-// 	if int(len(file_paths))%workers != 0 {
-// 		chunks++
-// 	}
-
-// 	var wg sync.WaitGroup
-// 	chunkChannel := make(chan int, chunks)
-
-// 	for w := 1; w <= workers; w++ {
-// 		wg.Add(1)
-// 		go toFileWorker(w, chunkChannel, &wg, file_paths)
-// 	}
-
-// 	for i := 1; i <= chunks; i++ {
-// 		chunkChannel <- i
-// 	}
-// 	close(chunkChannel)
-
-// 	wg.Wait()
-// }
-
 func decodeVideoToBinaryFile(video, output_folder string, workers int) {
 	cmd := exec.Command("ffmpeg", "-i", video, "-vf", "fps=30", output_folder+"/frame%d.png")
 	var out bytes.Buffer
@@ -367,14 +315,17 @@ func decodeVideoToBinaryFile(video, output_folder string, workers int) {
 		chunks++
 	}
 
+	// Divide file paths evenly among workers
 	var wg sync.WaitGroup
+	numFiles := len(file_paths)
+	filesPerWorker := (numFiles + workers - 1) / workers // Ensure rounding up if not divisible
 
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		start := w * chunks
-		end := start + chunks
-		if end > len(file_paths) {
-			end = len(file_paths)
+		start := w * filesPerWorker
+		end := start + filesPerWorker
+		if end > numFiles {
+			end = numFiles
 		}
 		go toFileWorker(w+1, file_paths[start:end], &wg, output_folder)
 	}
@@ -416,8 +367,7 @@ func combineChunks(workers int, output_folder string) {
 	defer finalOutput.Close()
 
 	for i := 1; i <= workers; i++ {
-		fmt.Print(i)
-		chunkPath := output_folder + "/output_chunk" + strconv.Itoa(i)
+		chunkPath := filepath.Join(output_folder, fmt.Sprintf("output_chunk%d", i))
 		chunkData, err := os.ReadFile(chunkPath)
 		if err != nil {
 			log.Printf("Error reading chunk %s: %v", chunkPath, err)
@@ -426,15 +376,21 @@ func combineChunks(workers int, output_folder string) {
 		if _, err := finalOutput.Write(chunkData); err != nil {
 			log.Fatal(err)
 		}
-		// Optionally, delete the chunk file after successful writing
 		// os.Remove(chunkPath)
 	}
 }
 
 func main() {
+	input_file := "test.mp4"
+
 	os.Mkdir("temp", 0755)
 	os.Mkdir("outp", 0755)
-	readFileAsChunkBinaryChannel("test.mp4", 500, 500, 250000, 5)
-	createVideoFromImagesFFMPEG("temp")
-	decodeVideoToBinaryFile("output.mkv", "outp", 5)
+
+	readFileAsChunkBinaryChannel(input_file, 500, 500, 250000, 10)
+	createVideoFromImagesFFMPEG("temp", "output.mkv")
+	decodeVideoToBinaryFile("output.mkv", "outp", 10)
+
+	os.RemoveAll("temp")
+	os.RemoveAll("outp")
+	os.Remove("output.mkv")
 }
