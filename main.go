@@ -15,7 +15,25 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/joho/godotenv"
 )
+
+type Res struct {
+	width  int
+	height int
+}
+
+var RES = map[string]Res{
+	"120":  {width: 160, height: 120},   // Very low resolution
+	"240":  {width: 320, height: 240},   // Low resolution
+	"480":  {width: 640, height: 480},   // Standard definition
+	"720":  {width: 1280, height: 720},  // HD
+	"1080": {width: 1920, height: 1080}, // Full HD
+	"1440": {width: 2560, height: 1440}, // Quad HD
+	"4K":   {width: 3840, height: 2160}, // 4K Ultra HD
+}
 
 func readFileAsBinary(filename string) ([]byte, error) {
 	data, err := os.ReadFile(filename)
@@ -151,8 +169,6 @@ func toImageWorker(id int, chunks <-chan int, wg *sync.WaitGroup, filename strin
 
 		png.Encode(outputFile, img)
 		outputFile.Close()
-
-		fmt.Printf("Worker %d: Processed chunk %d\n", id, chunkIndex)
 	}
 }
 
@@ -267,7 +283,6 @@ func createVideoFromImagesFFMPEG(folder, encoded_video string) {
 		log.Printf("cmd.Run() failed with %s\n", err)
 		log.Printf("stderr: %v\n", stderr.String())
 	}
-	log.Printf("Output: %v\n", out.String())
 }
 
 func decodeImageToFile(input_image, output_file string) {
@@ -376,21 +391,72 @@ func combineChunks(workers int, output_folder string) {
 		if _, err := finalOutput.Write(chunkData); err != nil {
 			log.Fatal(err)
 		}
-		// os.Remove(chunkPath)
 	}
 }
 
-func main() {
-	input_file := "test.mp4"
-
+func encode(input_file string) {
 	os.Mkdir("temp", 0755)
-	os.Mkdir("outp", 0755)
 
-	readFileAsChunkBinaryChannel(input_file, 500, 500, 250000, 10)
-	createVideoFromImagesFFMPEG("temp", "output.mkv")
-	decodeVideoToBinaryFile("output.mkv", "outp", 10)
+	res := os.Getenv("resolution")
+	workers := os.Getenv("workers")
+
+	resolution, ok := RES[res]
+
+	if !ok {
+		fmt.Println("Invalid resolution set in env.")
+	}
+
+	workerCount, err := strconv.Atoi(workers)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	readFileAsChunkBinaryChannel(input_file, resolution.width, resolution.height, resolution.height*resolution.width, workerCount)
+	createVideoFromImagesFFMPEG("temp", "encoded_vid.mkv")
 
 	os.RemoveAll("temp")
+}
+
+func decode(file_path string) {
+	os.Mkdir("outp", 0755)
+
+	workers := os.Getenv("workers")
+
+	workerCount, err := strconv.Atoi(workers)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	decodeVideoToBinaryFile(file_path, "outp", workerCount)
 	os.RemoveAll("outp")
-	os.Remove("output.mkv")
+}
+
+func main() {
+
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: <program> <file> <action: encode/decode>")
+		os.Exit(1)
+	}
+
+	file := os.Args[1]
+	action := os.Args[2]
+
+	if action != "encode" && action != "decode" {
+		fmt.Println("action should be either encode or decode")
+	}
+
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	start := time.Now()
+	fmt.Println("Start time: ", start)
+	if action == "encode" {
+		encode(file)
+	} else {
+		decode(file)
+	}
+	elapsed := time.Since(start)
+	fmt.Println("Elapsed time: ", elapsed)
 }
